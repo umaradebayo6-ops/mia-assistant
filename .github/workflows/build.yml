@@ -1,0 +1,318 @@
+name: Build Mia APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get repo
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Write the Mia project files
+        run: |
+          mkdir -p .
+          cat > settings.gradle.kts <<'MIAEOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Mia"
+          include(":app")
+          MIAEOF
+          mkdir -p .
+          cat > build.gradle.kts <<'MIAEOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          MIAEOF
+          mkdir -p .
+          cat > gradle.properties <<'MIAEOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          MIAEOF
+          mkdir -p app
+          cat > app/build.gradle.kts <<'MIAEOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.umar.mia"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.umar.mia"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.1"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          MIAEOF
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'MIAEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.READ_CONTACTS" />
+              <uses-permission android:name="android.permission.CALL_PHONE" />
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.speech.RecognitionService" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:label="Mia"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+
+          </manifest>
+          MIAEOF
+          mkdir -p app/src/main/java/com/umar/mia
+          cat > app/src/main/java/com/umar/mia/MainActivity.kt <<'MIAEOF'
+          package com.umar.mia
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.net.Uri
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.ContactsContract
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+
+              private lateinit var status: TextView
+              private lateinit var button: Button
+              private var recognizer: SpeechRecognizer? = null
+              private var listening = false
+              private val handler = Handler(Looper.getMainLooper())
+
+              private val needed = arrayOf(
+                  Manifest.permission.RECORD_AUDIO,
+                  Manifest.permission.READ_CONTACTS,
+                  Manifest.permission.CALL_PHONE
+              )
+
+              private val listener = object : RecognitionListener {
+                  override fun onResults(results: Bundle?) {
+                      val text = results
+                          ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                          ?.firstOrNull()
+                      if (text != null) handleSpeech(text)
+                      again()
+                  }
+                  override fun onError(error: Int) { again() }
+                  override fun onReadyForSpeech(params: Bundle?) {}
+                  override fun onBeginningOfSpeech() {}
+                  override fun onRmsChanged(rmsdB: Float) {}
+                  override fun onBufferReceived(buffer: ByteArray?) {}
+                  override fun onEndOfSpeech() {}
+                  override fun onPartialResults(partialResults: Bundle?) {}
+                  override fun onEvent(eventType: Int, params: Bundle?) {}
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val layout = LinearLayout(this)
+                  layout.orientation = LinearLayout.VERTICAL
+                  layout.gravity = Gravity.CENTER
+                  layout.setPadding(48, 48, 48, 48)
+
+                  status = TextView(this)
+                  status.text = "Hi, I'm Mia.\n\nTap Start Mia, then say:\n\"Hey Mia, call Mom\""
+                  status.textSize = 20f
+                  status.gravity = Gravity.CENTER
+
+                  button = Button(this)
+                  button.text = "Start Mia"
+                  button.setOnClickListener {
+                      if (listening) stopMia() else startMia()
+                  }
+
+                  layout.addView(status)
+                  layout.addView(button)
+                  setContentView(layout)
+              }
+
+              private fun startMia() {
+                  val missing = needed.filter {
+                      checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                  }
+                  if (missing.isNotEmpty()) {
+                      requestPermissions(missing.toTypedArray(), 1)
+                      return
+                  }
+                  if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                      status.text = "Speech recognition isn't available on this phone."
+                      return
+                  }
+                  listening = true
+                  button.text = "Stop Mia"
+                  status.text = "Listening...\nSay: \"Hey Mia, call Mom\""
+                  listen()
+              }
+
+              private fun stopMia() {
+                  listening = false
+                  handler.removeCallbacksAndMessages(null)
+                  recognizer?.destroy()
+                  recognizer = null
+                  button.text = "Start Mia"
+                  status.text = "Mia is asleep.\nTap Start Mia to wake her."
+              }
+
+              override fun onRequestPermissionsResult(
+                  requestCode: Int,
+                  permissions: Array<out String>,
+                  grantResults: IntArray
+              ) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+                  if (grantResults.isNotEmpty() &&
+                      grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+                  ) {
+                      startMia()
+                  } else {
+                      status.text = "I need the mic, contacts and phone permissions to work."
+                  }
+              }
+
+              private fun listen() {
+                  if (!listening) return
+                  val r = recognizer ?: SpeechRecognizer.createSpeechRecognizer(this).also {
+                      it.setRecognitionListener(listener)
+                      recognizer = it
+                  }
+                  val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                  intent.putExtra(
+                      RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                      RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                  )
+                  r.startListening(intent)
+              }
+
+              private fun again() {
+                  if (!listening) return
+                  handler.postDelayed({ listen() }, 600)
+              }
+
+              private fun handleSpeech(text: String) {
+                  val lower = text.lowercase()
+                  val match = Regex("\\b(mia|maya|mea|mya)\\b").find(lower)
+                  if (match == null) {
+                      status.text = "Listening...\n(heard: $text)"
+                      return
+                  }
+                  val command = lower
+                      .substring(match.range.last + 1)
+                      .trim()
+                      .trimStart(',', '.', ' ')
+                  if (command.startsWith("call ")) {
+                      callContact(command.removePrefix("call ").trim())
+                  } else {
+                      status.text = "Heard: $text\n\nI only know \"call <name>\" so far."
+                  }
+              }
+
+              private fun callContact(name: String) {
+                  val number = findNumber(name)
+                  if (number == null) {
+                      status.text = "I couldn't find \"$name\" in your contacts."
+                      return
+                  }
+                  status.text = "Calling $name..."
+                  val intent = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null))
+                  startActivity(intent)
+              }
+
+              private fun findNumber(name: String): String? {
+                  val cursor = contentResolver.query(
+                      ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                      arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                      ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " LIKE ?",
+                      arrayOf("%$name%"),
+                      null
+                  )
+                  cursor?.use {
+                      if (it.moveToFirst()) return it.getString(0)
+                  }
+                  return null
+              }
+
+              override fun onDestroy() {
+                  super.onDestroy()
+                  handler.removeCallbacksAndMessages(null)
+                  recognizer?.destroy()
+              }
+          }
+          MIAEOF
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build the APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Save the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mia-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
