@@ -262,4 +262,87 @@ jobs:
                       }
                       val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                       intent.putExtra(
-                          RecognizerIntent.EXTR
+                          RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                          RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                      )
+                      r.startListening(intent)
+                  } catch (e: Exception) {
+                      listening = false
+                      button.text = "Start Mia"
+                      status.text = "Error: $e"
+                  }
+              }
+
+              private fun again() {
+                  if (!listening) return
+                  handler.postDelayed({ listen() }, 600)
+              }
+
+              private fun handleSpeech(text: String) {
+                  val lower = text.lowercase()
+                  val match = Regex("\\b(mia|maya|mea|mya)\\b").find(lower)
+                  if (match == null) {
+                      status.text = "Listening...\n(heard: $text)"
+                      return
+                  }
+                  val command = lower
+                      .substring(match.range.last + 1)
+                      .trim()
+                      .trimStart(',', '.', ' ')
+                  if (command.startsWith("call ")) {
+                      callContact(command.removePrefix("call ").trim())
+                  } else {
+                      status.text = "Heard: $text\n\nI only know \"call <name>\" so far."
+                  }
+              }
+
+              private fun callContact(name: String) {
+                  val number = findNumber(name)
+                  if (number == null) {
+                      status.text = "I couldn't find \"$name\" in your contacts."
+                      return
+                  }
+                  status.text = "Calling $name..."
+                  try {
+                      val intent = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null))
+                      startActivity(intent)
+                  } catch (e: Exception) {
+                      status.text = "Call error: $e"
+                  }
+              }
+
+              private fun findNumber(name: String): String? {
+                  val cursor = contentResolver.query(
+                      ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                      arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                      ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " LIKE ?",
+                      arrayOf("%$name%"),
+                      null
+                  )
+                  cursor?.use {
+                      if (it.moveToFirst()) return it.getString(0)
+                  }
+                  return null
+              }
+
+              override fun onDestroy() {
+                  super.onDestroy()
+                  handler.removeCallbacksAndMessages(null)
+                  recognizer?.destroy()
+              }
+          }
+          MIAEOF
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build the APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Save the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mia-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
