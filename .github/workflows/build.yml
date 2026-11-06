@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Get repo
         uses: actions/checkout@v4
@@ -17,9 +17,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Write the Mia project files
         run: |
