@@ -18,6 +18,11 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Use the same signing key every build
+        run: |
+          mkdir -p ~/.android
+          echo "MIIEYgIBAzCCBAwGCSqGSIb3DQEHAaCCA/0EggP5MIID9TCCATwGCSqGSIb3DQEHAaCCAS0EggEpMIIBJTCCASEGCyqGSIb3DQEMCgECoIG9MIG6MGYGCSqGSIb3DQEFDTBZMDgGCSqGSIb3DQEFDDArBBTAIfMwQugb9kVdKzbzr44N78r4rwICJxACASAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEECyngCKepx/ld2ix8uHPTfUEULC+HjJO4WrCv5KYUMNjfXHlp0/iujiGNgZdnKzI67abMjRgE9TvIPo1eCaJbOpt6Hi/XSzOFGNeLVS8JCtFXI0wvThqOTuSeLxmU6Nxmy1tMVIwLQYJKoZIhvcNAQkUMSAeHgBhAG4AZAByAG8AaQBkAGQAZQBiAHUAZwBrAGUAeTAhBgkqhkiG9w0BCRUxFAQSVGltZSAxNzkzOTUwMzQ1NzU0MIICsQYJKoZIhvcNAQcGoIICojCCAp4CAQAwggKXBgkqhkiG9w0BBwEwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUMMCsEFGOMN5eZs+Q1xBHwqZ9HQx6DkqbdAgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQqo0+ZBiRA/t7e6bKAZLFNYCCAiBdYiWKxTr+zUV39IytKyBqrD/osmyS2LOJrtV/Ys1grD21U4ByRzfhtz0r6LnGbpTO7W1NAQTahA8dwv5lT0MOZUrN+BxGjL1rx/7ShWMtNk5lly4B8ovbtn3nsZSNrkliwCQ9WyntAqFuB8SeGLBREv46gBNYtwemODa1VgX+BRY2y+3hytOk+uVVobfcoUuaqfruqDWMClz4aPgFpL39WVb4HyeZmgYe22+5mB7bPxWro7nG9S2+f8E/G7MnKPa4/qz5xNyVjReOnyXWtJ0t/7k6ksf96QtKZAJUEShx/dJ5g76CEEEJNYzvf56N9S4H68mTwwj8m3VDEzNNEFe99Ic6MF/PzuI36/pc2Z0KayNvxY5w2stZGMltEzonJZ87Q7B0x6AX8J9QE2k7taiTJcM2t8r9p8d2djZWE7AEtfoQIB2OkL9dNhWt6/7PoAYEEwUMLfel1rtdqm8oChGit8G5qga6RDFXCcpVWD9/Pf5I5kimZ46kpVVaQ3izfxO62dwzqmL7ZwBpc7jPv9FgtRfxli3ILgEAjEV0qtYNT8SKMsmzaA/f7XxzmodqCdIsE36k5oJYVlyX2iUkpWJxktlqJ/z4n87CcesOOzO+6rrWdebf73mgF8cWLc0uryf77jZpEDvZsayz5Yf+iwCINtSDHsBQwhzPpEYboqJvn6JYRaUB3GYySfRvgHqdcYgSbt5aSLV6d2p1oPMwXPSiME0wMTANBglghkgBZQMEAgEFAAQgqkbu7YngZZD8nlkz9QrkSPQRqBpgDq05G7/vkbnSHbIEFGwvf66JeQsylXACEficVdysdH7aAgInEA==" | base64 -d > ~/.android/debug.keystore
+
       - name: Write the Mia project files
         run: |
           mkdir -p .
@@ -94,6 +99,13 @@ jobs:
                   <intent>
                       <action android:name="android.speech.RecognitionService" />
                   </intent>
+                  <intent>
+                      <action android:name="android.intent.action.TTS_SERVICE" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
               </queries>
 
               <application
@@ -117,8 +129,12 @@ jobs:
 
           import android.Manifest
           import android.app.Activity
+          import android.content.Context
           import android.content.Intent
           import android.content.pm.PackageManager
+          import android.hardware.camera2.CameraCharacteristics
+          import android.hardware.camera2.CameraManager
+          import android.media.AudioManager
           import android.net.Uri
           import android.os.Bundle
           import android.os.Handler
@@ -127,20 +143,45 @@ jobs:
           import android.speech.RecognitionListener
           import android.speech.RecognizerIntent
           import android.speech.SpeechRecognizer
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import android.text.InputType
           import android.util.Log
           import android.view.Gravity
           import android.widget.Button
+          import android.widget.EditText
           import android.widget.LinearLayout
           import android.widget.ScrollView
           import android.widget.TextView
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.Locale
 
           class MainActivity : Activity() {
 
               private lateinit var status: TextView
               private lateinit var button: Button
+              private lateinit var keyBox: EditText
+              private lateinit var modelBox: EditText
               private var recognizer: SpeechRecognizer? = null
+              private var tts: TextToSpeech? = null
               private var listening = false
+              private var paused = false
+              private var busy = false
               private val handler = Handler(Looper.getMainLooper())
+              private val prefs by lazy { getSharedPreferences("mia", MODE_PRIVATE) }
+              private val defaultModel = "gpt-6-luna"
+
+              private val systemPrompt = """You are Mia, a voice assistant living inside the user's Android phone. Reply with ONLY one JSON object and nothing else. Choose one action:
+          {"action":"call","name":"contact name"}
+          {"action":"open_app","name":"app name"}
+          {"action":"flashlight","on":true}
+          {"action":"volume","direction":"up"}
+          (direction is up, down or mute)
+          {"action":"say","text":"short spoken answer"}
+          For questions or chat, use say with an answer of at most 3 short sentences. If you are unsure what the user wants, use say and ask a short question."""
 
               private val needed = arrayOf(
                   Manifest.permission.RECORD_AUDIO,
@@ -157,7 +198,7 @@ jobs:
                       again()
                   }
                   override fun onError(error: Int) {
-                      status.text = "Listening...\n(mic code $error)"
+                      if (!paused && !busy) status.text = "Listening...\n(mic code $error)"
                       again()
                   }
                   override fun onReadyForSpeech(params: Bundle?) {}
@@ -172,11 +213,25 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
 
-                  val prefs = getSharedPreferences("mia", MODE_PRIVATE)
                   val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
                   Thread.setDefaultUncaughtExceptionHandler { t, e ->
                       prefs.edit().putString("crash", Log.getStackTraceString(e)).commit()
                       oldHandler?.uncaughtException(t, e)
+                  }
+
+                  tts = TextToSpeech(this) { s ->
+                      if (s == TextToSpeech.SUCCESS) {
+                          tts?.language = Locale.US
+                          tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                              override fun onStart(utteranceId: String?) {}
+                              override fun onDone(utteranceId: String?) {
+                                  runOnUiThread { resumeNow() }
+                              }
+                              override fun onError(utteranceId: String?) {
+                                  runOnUiThread { resumeNow() }
+                              }
+                          })
+                      }
                   }
 
                   val layout = LinearLayout(this)
@@ -185,7 +240,7 @@ jobs:
                   layout.setPadding(48, 48, 48, 48)
 
                   status = TextView(this)
-                  status.text = "Hi, I'm Mia.\n\nTap Start Mia, then say:\n\"Hey Mia, call Mom\""
+                  status.text = "Hi, I'm Mia.\n\nTap Start Mia, then say:\n\"Hey Mia, what is photosynthesis?\""
                   status.textSize = 20f
                   status.gravity = Gravity.CENTER
 
@@ -195,8 +250,41 @@ jobs:
                       if (listening) stopMia() else startMia()
                   }
 
+                  val label = TextView(this)
+                  label.text = "\nSettings (OpenAI)"
+                  label.textSize = 14f
+                  label.gravity = Gravity.CENTER
+
+                  keyBox = EditText(this)
+                  keyBox.hint = "Paste your OpenAI API key"
+                  keyBox.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                  keyBox.setSingleLine(true)
+
+                  modelBox = EditText(this)
+                  modelBox.hint = "Model name"
+                  modelBox.setText(prefs.getString("model", defaultModel))
+                  modelBox.setSingleLine(true)
+
+                  val saveBtn = Button(this)
+                  saveBtn.text = "Save"
+                  saveBtn.setOnClickListener {
+                      val key = keyBox.text.toString().trim()
+                      val model = modelBox.text.toString().trim().ifEmpty { defaultModel }
+                      val edit = prefs.edit()
+                      if (key.isNotEmpty()) edit.putString("apikey", key)
+                      edit.putString("model", model)
+                      edit.apply()
+                      keyBox.setText("")
+                      val has = !prefs.getString("apikey", "").isNullOrEmpty()
+                      status.text = if (has) "Saved. Mia's brain is ready.\nTap Start Mia." else "Model saved, but there is no API key yet."
+                  }
+
                   layout.addView(status)
                   layout.addView(button)
+                  layout.addView(label)
+                  layout.addView(keyBox)
+                  layout.addView(modelBox)
+                  layout.addView(saveBtn)
 
                   val crash = prefs.getString("crash", null)
                   if (crash != null) {
@@ -224,14 +312,19 @@ jobs:
                       return
                   }
                   listening = true
+                  paused = false
+                  busy = false
                   button.text = "Stop Mia"
-                  status.text = "Listening...\nSay: \"Hey Mia, call Mom\""
+                  status.text = "Listening...\nSay: \"Hey Mia, ...\""
                   listen()
               }
 
               private fun stopMia() {
                   listening = false
+                  paused = false
+                  busy = false
                   handler.removeCallbacksAndMessages(null)
+                  tts?.stop()
                   recognizer?.destroy()
                   recognizer = null
                   button.text = "Start Mia"
@@ -254,7 +347,7 @@ jobs:
               }
 
               private fun listen() {
-                  if (!listening) return
+                  if (!listening || paused) return
                   try {
                       val r = recognizer ?: SpeechRecognizer.createSpeechRecognizer(this).also {
                           it.setRecognitionListener(listener)
@@ -278,7 +371,24 @@ jobs:
                   handler.postDelayed({ listen() }, 600)
               }
 
+              private fun resumeNow() {
+                  if (!paused) return
+                  paused = false
+                  again()
+              }
+
+              private fun say(text: String) {
+                  status.text = "Mia: $text"
+                  val t = tts
+                  if (t == null || text.isBlank()) return
+                  paused = true
+                  recognizer?.cancel()
+                  t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "mia")
+                  handler.postDelayed({ resumeNow() }, 3000L + text.length * 80L)
+              }
+
               private fun handleSpeech(text: String) {
+                  if (busy || paused) return
                   val lower = text.lowercase()
                   val match = Regex("\\b(mia|maya|mea|mya)\\b").find(lower)
                   if (match == null) {
@@ -289,10 +399,92 @@ jobs:
                       .substring(match.range.last + 1)
                       .trim()
                       .trimStart(',', '.', ' ')
+                  if (command.isBlank()) {
+                      status.text = "Yes? Say: Hey Mia, and then what you want."
+                      return
+                  }
                   if (command.startsWith("call ")) {
                       callContact(command.removePrefix("call ").trim())
                   } else {
-                      status.text = "Heard: $text\n\nI only know \"call <name>\" so far."
+                      askBrain(command)
+                  }
+              }
+
+              private fun askBrain(command: String) {
+                  val key = prefs.getString("apikey", "") ?: ""
+                  val model = prefs.getString("model", defaultModel) ?: defaultModel
+                  if (key.isBlank()) {
+                      status.text = "I need your OpenAI key first.\nPaste it below and tap Save."
+                      return
+                  }
+                  busy = true
+                  status.text = "Thinking...\n($command)"
+                  Thread {
+                      val result = callOpenAI(key, model, command)
+                      runOnUiThread {
+                          busy = false
+                          handleBrain(result)
+                      }
+                  }.start()
+              }
+
+              private fun callOpenAI(key: String, model: String, command: String): String {
+                  try {
+                      val body = JSONObject()
+                      body.put("model", model)
+                      val msgs = JSONArray()
+                      msgs.put(JSONObject().put("role", "system").put("content", systemPrompt))
+                      msgs.put(JSONObject().put("role", "user").put("content", command))
+                      body.put("messages", msgs)
+
+                      val conn = URL("https://api.openai.com/v1/chat/completions")
+                          .openConnection() as HttpURLConnection
+                      conn.requestMethod = "POST"
+                      conn.connectTimeout = 15000
+                      conn.readTimeout = 40000
+                      conn.setRequestProperty("Content-Type", "application/json")
+                      conn.setRequestProperty("Authorization", "Bearer " + key)
+                      conn.doOutput = true
+                      conn.outputStream.use { it.write(body.toString().toByteArray()) }
+
+                      val code = conn.responseCode
+                      val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                      val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                      if (code !in 200..299) return "ERR: HTTP $code $text"
+                      return JSONObject(text)
+                          .getJSONArray("choices")
+                          .getJSONObject(0)
+                          .getJSONObject("message")
+                          .getString("content")
+                  } catch (e: Exception) {
+                      return "ERR: $e"
+                  }
+              }
+
+              private fun handleBrain(result: String) {
+                  if (result.startsWith("ERR:")) {
+                      status.text = "Brain error:\n" + result.take(500)
+                      return
+                  }
+                  val start = result.indexOf('{')
+                  val end = result.lastIndexOf('}')
+                  if (start < 0 || end <= start) {
+                      say(result)
+                      return
+                  }
+                  val j = try {
+                      JSONObject(result.substring(start, end + 1))
+                  } catch (e: Exception) {
+                      say(result)
+                      return
+                  }
+                  when (j.optString("action")) {
+                      "call" -> callContact(j.optString("name"))
+                      "open_app" -> openApp(j.optString("name"))
+                      "flashlight" -> flashlight(j.optBoolean("on", true))
+                      "volume" -> volume(j.optString("direction"))
+                      "say" -> say(j.optString("text"))
+                      else -> say(result)
                   }
               }
 
@@ -325,9 +517,66 @@ jobs:
                   return null
               }
 
+              private fun openApp(name: String) {
+                  if (name.isBlank()) {
+                      say("Which app should I open?")
+                      return
+                  }
+                  val pm = packageManager
+                  val query = Intent(Intent.ACTION_MAIN)
+                  query.addCategory(Intent.CATEGORY_LAUNCHER)
+                  val apps = pm.queryIntentActivities(query, 0)
+                  val target = apps.firstOrNull {
+                      it.loadLabel(pm).toString().lowercase().contains(name.lowercase())
+                  }
+                  if (target == null) {
+                      say("I couldn't find an app called $name.")
+                      return
+                  }
+                  val launch = Intent(Intent.ACTION_MAIN)
+                  launch.addCategory(Intent.CATEGORY_LAUNCHER)
+                  launch.setClassName(target.activityInfo.packageName, target.activityInfo.name)
+                  launch.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                  try {
+                      startActivity(launch)
+                      status.text = "Opening " + target.loadLabel(pm) + "..."
+                  } catch (e: Exception) {
+                      status.text = "Open error: $e"
+                  }
+              }
+
+              private fun flashlight(on: Boolean) {
+                  try {
+                      val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                      val id = cm.cameraIdList.firstOrNull {
+                          cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                      }
+                      if (id == null) {
+                          say("This phone has no flashlight.")
+                          return
+                      }
+                      cm.setTorchMode(id, on)
+                      status.text = if (on) "Flashlight on" else "Flashlight off"
+                  } catch (e: Exception) {
+                      status.text = "Flashlight error: $e"
+                  }
+              }
+
+              private fun volume(direction: String) {
+                  val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  val adj = when (direction) {
+                      "up" -> AudioManager.ADJUST_RAISE
+                      "down" -> AudioManager.ADJUST_LOWER
+                      else -> AudioManager.ADJUST_MUTE
+                  }
+                  am.adjustStreamVolume(AudioManager.STREAM_MUSIC, adj, AudioManager.FLAG_SHOW_UI)
+                  status.text = "Volume: $direction"
+              }
+
               override fun onDestroy() {
                   super.onDestroy()
                   handler.removeCallbacksAndMessages(null)
+                  tts?.shutdown()
                   recognizer?.destroy()
               }
           }
