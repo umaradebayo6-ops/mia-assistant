@@ -71,8 +71,8 @@ jobs:
                   applicationId = "com.umar.mia"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "0.1"
+                  versionCode = 2
+                  versionName = "0.2"
               }
 
               compileOptions {
@@ -113,6 +113,7 @@ jobs:
                   android:theme="@android:style/Theme.Material.NoActionBar">
                   <activity
                       android:name=".MainActivity"
+                      android:windowSoftInputMode="adjustResize"
                       android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -128,10 +129,19 @@ jobs:
           package com.umar.mia
 
           import android.Manifest
+          import android.animation.ValueAnimator
           import android.app.Activity
           import android.content.Context
           import android.content.Intent
           import android.content.pm.PackageManager
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.RadialGradient
+          import android.graphics.RectF
+          import android.graphics.Shader
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
           import android.hardware.camera2.CameraCharacteristics
           import android.hardware.camera2.CameraManager
           import android.media.AudioManager
@@ -148,8 +158,11 @@ jobs:
           import android.text.InputType
           import android.util.Log
           import android.view.Gravity
+          import android.view.View
+          import android.view.animation.LinearInterpolator
           import android.widget.Button
           import android.widget.EditText
+          import android.widget.HorizontalScrollView
           import android.widget.LinearLayout
           import android.widget.ScrollView
           import android.widget.TextView
@@ -159,12 +172,145 @@ jobs:
           import java.net.URL
           import java.util.Locale
 
+          class OrbView(context: Context) : View(context) {
+
+              enum class Mode { IDLE, LISTENING, THINKING, SPEAKING }
+
+              var mode: Mode = Mode.IDLE
+                  set(value) {
+                      field = value
+                      invalidate()
+                  }
+
+              var level: Float = 0f
+
+              private var phase = 0f
+              private var smooth = 0f
+              private val density = context.resources.displayMetrics.density
+              private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val arcPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val arcRect = RectF()
+
+              private val animator = ValueAnimator.ofFloat(0f, 1f)
+
+              init {
+                  ringPaint.style = Paint.Style.STROKE
+                  ringPaint.strokeWidth = 3f * density
+                  arcPaint.style = Paint.Style.STROKE
+                  arcPaint.strokeCap = Paint.Cap.ROUND
+                  arcPaint.strokeWidth = 5f * density
+                  animator.duration = 2400
+                  animator.repeatCount = ValueAnimator.INFINITE
+                  animator.interpolator = LinearInterpolator()
+                  animator.addUpdateListener {
+                      phase = it.animatedValue as Float
+                      invalidate()
+                  }
+              }
+
+              private fun colorFor(): Int = when (mode) {
+                  Mode.IDLE -> Color.parseColor("#7C4DFF")
+                  Mode.LISTENING -> Color.parseColor("#00E5FF")
+                  Mode.THINKING -> Color.parseColor("#FFB300")
+                  Mode.SPEAKING -> Color.parseColor("#00E676")
+              }
+
+              private fun withAlpha(c: Int, a: Int): Int {
+                  val alpha = a.coerceIn(0, 255)
+                  return Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
+              }
+
+              override fun onAttachedToWindow() {
+                  super.onAttachedToWindow()
+                  animator.start()
+              }
+
+              override fun onDetachedFromWindow() {
+                  animator.cancel()
+                  super.onDetachedFromWindow()
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  val cx = width / 2f
+                  val cy = height / 2f
+                  val base = minOf(width, height) * 0.2f
+                  val color = colorFor()
+                  val twoPi = (2.0 * Math.PI).toFloat()
+
+                  smooth += (level - smooth) * 0.25f
+
+                  val wave = Math.sin((phase * twoPi).toDouble()).toFloat()
+                  val wave2 = Math.sin((phase * twoPi * 2f).toDouble()).toFloat()
+                  val wave3 = Math.abs(Math.sin((phase * twoPi * 3f).toDouble())).toFloat()
+
+                  val scale = when (mode) {
+                      Mode.IDLE -> 1f + 0.04f * wave
+                      Mode.LISTENING -> 1f + 0.05f * wave2 + 0.18f * smooth
+                      Mode.THINKING -> 0.95f + 0.03f * wave2
+                      Mode.SPEAKING -> 1f + 0.14f * wave3
+                  }
+                  val r = base * scale
+
+                  // soft glow
+                  glowPaint.shader = RadialGradient(
+                      cx, cy, r * 2.8f,
+                      intArrayOf(withAlpha(color, 130), withAlpha(color, 0)),
+                      null,
+                      Shader.TileMode.CLAMP
+                  )
+                  canvas.drawCircle(cx, cy, r * 2.8f, glowPaint)
+
+                  // pulse rings
+                  if (mode == Mode.LISTENING || mode == Mode.SPEAKING) {
+                      for (i in 0 until 3) {
+                          val p = (phase + i / 3f) % 1f
+                          ringPaint.color = withAlpha(color, ((1f - p) * 160f).toInt())
+                          canvas.drawCircle(cx, cy, r * (1f + 0.9f * p), ringPaint)
+                      }
+                  } else if (mode == Mode.IDLE) {
+                      val p = phase
+                      ringPaint.color = withAlpha(color, ((1f - p) * 70f).toInt())
+                      canvas.drawCircle(cx, cy, r * (1f + 0.6f * p), ringPaint)
+                  }
+
+                  // thinking spinner
+                  if (mode == Mode.THINKING) {
+                      arcPaint.color = color
+                      arcRect.set(cx - r * 1.55f, cy - r * 1.55f, cx + r * 1.55f, cy + r * 1.55f)
+                      canvas.drawArc(arcRect, phase * 360f, 110f, false, arcPaint)
+                      canvas.drawArc(arcRect, phase * 360f + 180f, 110f, false, arcPaint)
+                  }
+
+                  // core
+                  val dark = Color.argb(
+                      255,
+                      Color.red(color) / 3,
+                      Color.green(color) / 3,
+                      Color.blue(color) / 3
+                  )
+                  corePaint.shader = RadialGradient(
+                      cx - r * 0.3f, cy - r * 0.3f, r * 1.4f,
+                      intArrayOf(Color.WHITE, color, dark),
+                      floatArrayOf(0f, 0.45f, 1f),
+                      Shader.TileMode.CLAMP
+                  )
+                  canvas.drawCircle(cx, cy, r, corePaint)
+              }
+          }
+
           class MainActivity : Activity() {
 
               private lateinit var status: TextView
               private lateinit var button: Button
+              private lateinit var orb: OrbView
+              private lateinit var feed: LinearLayout
               private lateinit var keyBox: EditText
               private lateinit var modelBox: EditText
+              private lateinit var savedText: TextView
+              private lateinit var savedRow: LinearLayout
+              private var changingKey = false
               private var recognizer: SpeechRecognizer? = null
               private var tts: TextToSpeech? = null
               private var listening = false
@@ -198,20 +344,120 @@ jobs:
                       again()
                   }
                   override fun onError(error: Int) {
-                      if (!paused && !busy) status.text = "Listening...\n(mic code $error)"
+                      if (!paused && !busy && error != 6 && error != 7) {
+                          setStatus("Listening...\n(mic code $error)")
+                      }
                       again()
+                  }
+                  override fun onRmsChanged(rmsdB: Float) {
+                      orb.level = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
                   }
                   override fun onReadyForSpeech(params: Bundle?) {}
                   override fun onBeginningOfSpeech() {}
-                  override fun onRmsChanged(rmsdB: Float) {}
                   override fun onBufferReceived(buffer: ByteArray?) {}
                   override fun onEndOfSpeech() {}
                   override fun onPartialResults(partialResults: Bundle?) {}
                   override fun onEvent(eventType: Int, params: Bundle?) {}
               }
 
+              private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+              private fun pill(color: Int, radiusDp: Int): GradientDrawable {
+                  val d = GradientDrawable()
+                  d.setColor(color)
+                  d.cornerRadius = dp(radiusDp).toFloat()
+                  return d
+              }
+
+              private fun params(top: Int): LinearLayout.LayoutParams {
+                  val p = LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT
+                  )
+                  p.topMargin = dp(top)
+                  return p
+              }
+
+              private fun chipParams(): LinearLayout.LayoutParams {
+                  val p = LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.WRAP_CONTENT,
+                      dp(40)
+                  )
+                  p.rightMargin = dp(8)
+                  return p
+              }
+
+              private fun chip(label: String, action: () -> Unit): Button {
+                  val b = Button(this)
+                  b.text = label
+                  b.isAllCaps = false
+                  b.textSize = 13f
+                  b.setTextColor(Color.WHITE)
+                  b.background = pill(Color.parseColor("#1E1E3A"), 20)
+                  b.minHeight = 0
+                  b.minimumHeight = 0
+                  b.setPadding(dp(16), 0, dp(16), 0)
+                  b.setOnClickListener { action() }
+                  return b
+              }
+
+              private fun styleInput(e: EditText) {
+                  e.setTextColor(Color.WHITE)
+                  e.setHintTextColor(Color.parseColor("#6E7390"))
+                  e.background = pill(Color.parseColor("#1E1E3A"), 12)
+                  e.setPadding(dp(14), dp(10), dp(14), dp(10))
+                  e.setSingleLine(true)
+              }
+
+              private fun smallButton(label: String, color: String): Button {
+                  val b = Button(this)
+                  b.text = label
+                  b.isAllCaps = false
+                  b.textSize = 13f
+                  b.setTextColor(Color.WHITE)
+                  b.background = pill(Color.parseColor(color), 12)
+                  b.minHeight = 0
+                  b.minimumHeight = 0
+                  b.setPadding(dp(16), dp(8), dp(16), dp(8))
+                  return b
+              }
+
+              private fun styleButton() {
+                  button.text = if (listening) "Stop Mia" else "Start Mia"
+                  button.background = pill(Color.parseColor(if (listening) "#FF5252" else "#7C4DFF"), 28)
+              }
+
+              private fun setStatus(text: String) {
+                  status.text = text
+              }
+
+              private fun addFeed(who: String, text: String) {
+                  val tv = TextView(this)
+                  tv.text = who + ": " + text
+                  tv.textSize = 14f
+                  tv.setTextColor(
+                      if (who == "You") Color.parseColor("#9AA0B4") else Color.parseColor("#E8EAF6")
+                  )
+                  tv.setPadding(0, dp(4), 0, dp(4))
+                  feed.addView(tv, 1)
+                  while (feed.childCount > 8) feed.removeViewAt(feed.childCount - 1)
+              }
+
+              private fun refreshKeyUi() {
+                  val key = prefs.getString("apikey", "") ?: ""
+                  val has = key.isNotEmpty()
+                  val showInput = !has || changingKey
+                  keyBox.visibility = if (showInput) View.VISIBLE else View.GONE
+                  savedText.visibility = if (showInput) View.GONE else View.VISIBLE
+                  savedRow.visibility = if (showInput) View.GONE else View.VISIBLE
+                  savedText.text = if (has) "API key saved \u2713  (ends with " + key.takeLast(4) + ")" else ""
+                  keyBox.hint = if (has) "Paste your new OpenAI API key" else "Paste your OpenAI API key"
+              }
+
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  window.statusBarColor = Color.parseColor("#0B0B14")
+                  window.navigationBarColor = Color.parseColor("#0B0B14")
 
                   val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
                   Thread.setDefaultUncaughtExceptionHandler { t, e ->
@@ -234,39 +480,121 @@ jobs:
                       }
                   }
 
-                  val layout = LinearLayout(this)
-                  layout.orientation = LinearLayout.VERTICAL
-                  layout.gravity = Gravity.CENTER
-                  layout.setPadding(48, 48, 48, 48)
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setBackgroundColor(Color.parseColor("#0B0B14"))
+                  root.setPadding(dp(20), dp(28), dp(20), dp(28))
+
+                  val title = TextView(this)
+                  title.text = "Mia"
+                  title.textSize = 34f
+                  title.setTextColor(Color.WHITE)
+                  title.gravity = Gravity.CENTER
+                  title.setTypeface(title.typeface, Typeface.BOLD)
+
+                  val subtitle = TextView(this)
+                  subtitle.text = "Your voice machine"
+                  subtitle.textSize = 14f
+                  subtitle.setTextColor(Color.parseColor("#9AA0B4"))
+                  subtitle.gravity = Gravity.CENTER
+
+                  orb = OrbView(this)
 
                   status = TextView(this)
-                  status.text = "Hi, I'm Mia.\n\nTap Start Mia, then say:\n\"Hey Mia, what is photosynthesis?\""
-                  status.textSize = 20f
+                  status.text = "Hi, I'm Mia.\nTap Start Mia, then say:\n\"Hey Mia, what is photosynthesis?\""
+                  status.textSize = 17f
+                  status.setTextColor(Color.WHITE)
                   status.gravity = Gravity.CENTER
 
                   button = Button(this)
-                  button.text = "Start Mia"
+                  button.isAllCaps = false
+                  button.textSize = 18f
+                  button.setTextColor(Color.WHITE)
                   button.setOnClickListener {
                       if (listening) stopMia() else startMia()
                   }
+                  styleButton()
+
+                  val chipsScroll = HorizontalScrollView(this)
+                  chipsScroll.isHorizontalScrollBarEnabled = false
+                  val chipsRow = LinearLayout(this)
+                  chipsRow.orientation = LinearLayout.HORIZONTAL
+                  chipsRow.addView(chip("Flashlight on") {
+                      addFeed("You", "Flashlight on")
+                      flashlight(true)
+                  }, chipParams())
+                  chipsRow.addView(chip("Flashlight off") {
+                      addFeed("You", "Flashlight off")
+                      flashlight(false)
+                  }, chipParams())
+                  chipsRow.addView(chip("Volume up") {
+                      addFeed("You", "Volume up")
+                      volume("up")
+                  }, chipParams())
+                  chipsRow.addView(chip("Volume down") {
+                      addFeed("You", "Volume down")
+                      volume("down")
+                  }, chipParams())
+                  chipsScroll.addView(chipsRow)
+
+                  // activity feed
+                  feed = LinearLayout(this)
+                  feed.orientation = LinearLayout.VERTICAL
+                  feed.background = pill(Color.parseColor("#14142A"), 16)
+                  feed.setPadding(dp(16), dp(14), dp(16), dp(14))
+                  val feedLabel = TextView(this)
+                  feedLabel.text = "Activity"
+                  feedLabel.textSize = 13f
+                  feedLabel.setTextColor(Color.parseColor("#7C4DFF"))
+                  feed.addView(feedLabel)
+                  addFeed("Mia", "Ready when you are. Say \"Hey Mia\" and give me a command.")
+
+                  // settings card
+                  val card = LinearLayout(this)
+                  card.orientation = LinearLayout.VERTICAL
+                  card.background = pill(Color.parseColor("#14142A"), 16)
+                  card.setPadding(dp(16), dp(14), dp(16), dp(14))
 
                   val label = TextView(this)
-                  label.text = "\nSettings (OpenAI)"
-                  label.textSize = 14f
-                  label.gravity = Gravity.CENTER
+                  label.text = "Settings (OpenAI)"
+                  label.textSize = 13f
+                  label.setTextColor(Color.parseColor("#7C4DFF"))
 
                   keyBox = EditText(this)
-                  keyBox.hint = "Paste your OpenAI API key"
                   keyBox.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                  keyBox.setSingleLine(true)
+                  styleInput(keyBox)
+
+                  savedText = TextView(this)
+                  savedText.textSize = 15f
+                  savedText.setTextColor(Color.parseColor("#00E676"))
+
+                  savedRow = LinearLayout(this)
+                  savedRow.orientation = LinearLayout.HORIZONTAL
+                  val changeBtn = smallButton("Change key", "#1E1E3A")
+                  changeBtn.setOnClickListener {
+                      changingKey = true
+                      refreshKeyUi()
+                  }
+                  val removeBtn = smallButton("Remove key", "#5A1F2B")
+                  removeBtn.setOnClickListener {
+                      prefs.edit().remove("apikey").apply()
+                      changingKey = false
+                      refreshKeyUi()
+                      setStatus("API key removed.")
+                  }
+                  savedRow.addView(changeBtn, chipParams())
+                  savedRow.addView(removeBtn, chipParams())
 
                   modelBox = EditText(this)
                   modelBox.hint = "Model name"
                   modelBox.setText(prefs.getString("model", defaultModel))
-                  modelBox.setSingleLine(true)
+                  styleInput(modelBox)
 
                   val saveBtn = Button(this)
                   saveBtn.text = "Save"
+                  saveBtn.isAllCaps = false
+                  saveBtn.setTextColor(Color.WHITE)
+                  saveBtn.background = pill(Color.parseColor("#7C4DFF"), 12)
                   saveBtn.setOnClickListener {
                       val key = keyBox.text.toString().trim()
                       val model = modelBox.text.toString().trim().ifEmpty { defaultModel }
@@ -275,27 +603,46 @@ jobs:
                       edit.putString("model", model)
                       edit.apply()
                       keyBox.setText("")
+                      changingKey = false
+                      refreshKeyUi()
                       val has = !prefs.getString("apikey", "").isNullOrEmpty()
-                      status.text = if (has) "Saved. Mia's brain is ready.\nTap Start Mia." else "Model saved, but there is no API key yet."
+                      setStatus(
+                          if (has) "Saved. Mia's brain is ready.\nTap Start Mia."
+                          else "Model saved, but there is no API key yet."
+                      )
                   }
 
-                  layout.addView(status)
-                  layout.addView(button)
-                  layout.addView(label)
-                  layout.addView(keyBox)
-                  layout.addView(modelBox)
-                  layout.addView(saveBtn)
+                  card.addView(label)
+                  card.addView(keyBox, params(10))
+                  card.addView(savedText, params(10))
+                  card.addView(savedRow, params(8))
+                  card.addView(modelBox, params(10))
+                  card.addView(saveBtn, params(12))
+
+                  root.addView(title, params(0))
+                  root.addView(subtitle, params(0))
+                  root.addView(orb, LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT, dp(260)
+                  ))
+                  root.addView(status, params(0))
+                  root.addView(button, params(18))
+                  root.addView(chipsScroll, params(14))
+                  root.addView(feed, params(18))
+                  root.addView(card, params(14))
+
+                  refreshKeyUi()
 
                   val crash = prefs.getString("crash", null)
                   if (crash != null) {
-                      status.text = "Mia crashed last time. Screenshot this:\n\n" + crash.take(1200)
+                      setStatus("Mia crashed last time. Screenshot this:\n\n" + crash.take(1200))
                       status.textSize = 12f
                       prefs.edit().remove("crash").apply()
                   }
 
                   val scroll = ScrollView(this)
                   scroll.isFillViewport = true
-                  scroll.addView(layout)
+                  scroll.setBackgroundColor(Color.parseColor("#0B0B14"))
+                  scroll.addView(root)
                   setContentView(scroll)
               }
 
@@ -308,14 +655,15 @@ jobs:
                       return
                   }
                   if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-                      status.text = "Speech recognition isn't available on this phone."
+                      setStatus("Speech recognition isn't available on this phone.")
                       return
                   }
                   listening = true
                   paused = false
                   busy = false
-                  button.text = "Stop Mia"
-                  status.text = "Listening...\nSay: \"Hey Mia, ...\""
+                  styleButton()
+                  orb.mode = OrbView.Mode.LISTENING
+                  setStatus("Listening...\nSay: \"Hey Mia, ...\"")
                   listen()
               }
 
@@ -327,8 +675,10 @@ jobs:
                   tts?.stop()
                   recognizer?.destroy()
                   recognizer = null
-                  button.text = "Start Mia"
-                  status.text = "Mia is asleep.\nTap Start Mia to wake her."
+                  orb.level = 0f
+                  orb.mode = OrbView.Mode.IDLE
+                  styleButton()
+                  setStatus("Mia is asleep.\nTap Start Mia to wake her.")
               }
 
               override fun onRequestPermissionsResult(
@@ -342,7 +692,7 @@ jobs:
                   ) {
                       startMia()
                   } else {
-                      status.text = "I need the mic, contacts and phone permissions to work."
+                      setStatus("I need the mic, contacts and phone permissions to work.")
                   }
               }
 
@@ -361,8 +711,9 @@ jobs:
                       r.startListening(intent)
                   } catch (e: Exception) {
                       listening = false
-                      button.text = "Start Mia"
-                      status.text = "Error: $e"
+                      orb.mode = OrbView.Mode.IDLE
+                      styleButton()
+                      setStatus("Error: $e")
                   }
               }
 
@@ -374,14 +725,17 @@ jobs:
               private fun resumeNow() {
                   if (!paused) return
                   paused = false
+                  if (listening) orb.mode = OrbView.Mode.LISTENING
                   again()
               }
 
               private fun say(text: String) {
-                  status.text = "Mia: $text"
+                  setStatus("Mia: $text")
+                  addFeed("Mia", text)
                   val t = tts
                   if (t == null || text.isBlank()) return
                   paused = true
+                  orb.mode = OrbView.Mode.SPEAKING
                   recognizer?.cancel()
                   t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "mia")
                   handler.postDelayed({ resumeNow() }, 3000L + text.length * 80L)
@@ -392,7 +746,7 @@ jobs:
                   val lower = text.lowercase()
                   val match = Regex("\\b(mia|maya|mea|mya)\\b").find(lower)
                   if (match == null) {
-                      status.text = "Listening...\n(heard: $text)"
+                      setStatus("Listening...\n(heard: $text)")
                       return
                   }
                   val command = lower
@@ -400,9 +754,10 @@ jobs:
                       .trim()
                       .trimStart(',', '.', ' ')
                   if (command.isBlank()) {
-                      status.text = "Yes? Say: Hey Mia, and then what you want."
+                      setStatus("Yes? Say: Hey Mia, and then what you want.")
                       return
                   }
+                  addFeed("You", command)
                   if (command.startsWith("call ")) {
                       callContact(command.removePrefix("call ").trim())
                   } else {
@@ -414,11 +769,12 @@ jobs:
                   val key = prefs.getString("apikey", "") ?: ""
                   val model = prefs.getString("model", defaultModel) ?: defaultModel
                   if (key.isBlank()) {
-                      status.text = "I need your OpenAI key first.\nPaste it below and tap Save."
+                      setStatus("I need your OpenAI key first.\nPaste it in Settings and tap Save.")
                       return
                   }
                   busy = true
-                  status.text = "Thinking...\n($command)"
+                  orb.mode = OrbView.Mode.THINKING
+                  setStatus("Thinking...\n($command)")
                   Thread {
                       val result = callOpenAI(key, model, command)
                       runOnUiThread {
@@ -462,8 +818,10 @@ jobs:
               }
 
               private fun handleBrain(result: String) {
+                  orb.mode = if (listening) OrbView.Mode.LISTENING else OrbView.Mode.IDLE
                   if (result.startsWith("ERR:")) {
-                      status.text = "Brain error:\n" + result.take(500)
+                      setStatus("Brain error:\n" + result.take(500))
+                      addFeed("Mia", "Brain error. Check your key and model.")
                       return
                   }
                   val start = result.indexOf('{')
@@ -491,15 +849,17 @@ jobs:
               private fun callContact(name: String) {
                   val number = findNumber(name)
                   if (number == null) {
-                      status.text = "I couldn't find \"$name\" in your contacts."
+                      setStatus("I couldn't find \"$name\" in your contacts.")
+                      addFeed("Mia", "I couldn't find $name in your contacts.")
                       return
                   }
-                  status.text = "Calling $name..."
+                  setStatus("Calling $name...")
+                  addFeed("Mia", "Calling $name")
                   try {
                       val intent = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null))
                       startActivity(intent)
                   } catch (e: Exception) {
-                      status.text = "Call error: $e"
+                      setStatus("Call error: $e")
                   }
               }
 
@@ -539,9 +899,10 @@ jobs:
                   launch.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                   try {
                       startActivity(launch)
-                      status.text = "Opening " + target.loadLabel(pm) + "..."
+                      setStatus("Opening " + target.loadLabel(pm) + "...")
+                      addFeed("Mia", "Opening " + target.loadLabel(pm))
                   } catch (e: Exception) {
-                      status.text = "Open error: $e"
+                      setStatus("Open error: $e")
                   }
               }
 
@@ -556,9 +917,9 @@ jobs:
                           return
                       }
                       cm.setTorchMode(id, on)
-                      status.text = if (on) "Flashlight on" else "Flashlight off"
+                      setStatus(if (on) "Flashlight on" else "Flashlight off")
                   } catch (e: Exception) {
-                      status.text = "Flashlight error: $e"
+                      setStatus("Flashlight error: $e")
                   }
               }
 
@@ -570,7 +931,7 @@ jobs:
                       else -> AudioManager.ADJUST_MUTE
                   }
                   am.adjustStreamVolume(AudioManager.STREAM_MUSIC, adj, AudioManager.FLAG_SHOW_UI)
-                  status.text = "Volume: $direction"
+                  setStatus("Volume: $direction")
               }
 
               override fun onDestroy() {
